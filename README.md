@@ -44,7 +44,7 @@ SolShield addresses these issues by anchoring contracts to the Solana blockchain
 
 - `@project-serum/anchor` for interacting with the on-chain program
 - `@solana/wallet-adapter-react` and `@solana/wallet-adapter-wallets` for multi-wallet connection
-- Custom Anchor program: `sol-shield-sdk` (see [programs/](../programs/))
+- Custom Anchor program: `sol-shield-sdk` (see [programs/sol-shield-sdk](programs/sol-shield-sdk))
 
 **Document handling**
 
@@ -53,24 +53,87 @@ SolShield addresses these issues by anchoring contracts to the Solana blockchain
 - `md5` for client-side document hashing
 - `localforage` for offline-friendly local storage
 
+## On-chain program
+
+The smart contract lives in [programs/sol-shield-sdk](programs/sol-shield-sdk) and is written in Rust using the [Anchor](https://www.anchor-lang.com/) framework (v0.25.0).
+
+**Program ID:** `33eJhB9P4Kmf51MUpRgpJpdDab2MWP9FmpVHrASspJ3B`
+
+### Accounts
+
+The program defines two PDA-based account types:
+
+**`Contract`** — represents a single agreement on-chain.
+
+| Field          | Type         | Description                                             |
+| -------------- | ------------ | ------------------------------------------------------- |
+| `authority`    | `Pubkey`     | Wallet that created and owns the contract              |
+| `hash`         | `[u8; 16]`   | Cryptographic hash of the underlying document           |
+| `expired_at`   | `i64`        | Unix timestamp after which the contract is no longer valid |
+| `total_signer` | `u8`         | Total number of signers registered for the contract    |
+| `total_signed` | `u8`         | Number of signers who have already signed              |
+| `state`        | `ContractState` | `Uninitialized`, `Initialized`, `Processing`, or `Approved` |
+
+PDA seeds: `["contract", hash]`.
+
+**`ContractSigner`** — represents one signer's participation in one contract.
+
+| Field       | Type                  | Description                             |
+| ----------- | --------------------- | --------------------------------------- |
+| `authority` | `Pubkey`              | Wallet expected to sign the contract    |
+| `contract`  | `Pubkey`              | Reference to the associated contract    |
+| `state`     | `ContractSignerState` | `Uninitialized`, `Initialized`, or `Singed` |
+
+PDA seeds: `["signer", contract, signer_authority]`.
+
+### Instructions
+
+The program exposes four instructions that together implement the full signing lifecycle:
+
+1. **`create_contract(hash, expired_at)`** – The contract owner initializes a new `Contract` PDA derived from the document hash. The contract starts in the `Initialized` state with zero signers.
+2. **`create_signer()`** – While the contract is still `Initialized`, the owner registers each required signer by creating a `ContractSigner` PDA for that wallet. Each call increments `total_signer`.
+3. **`active_contract()`** – The owner transitions the contract from `Initialized` to `Processing`, freezing the signer list and opening the contract for signatures.
+4. **`sign_contract()`** – Each registered signer calls this with their own wallet while the contract is in `Processing`. The matching `ContractSigner` is flipped to `Singed` and `total_signed` is incremented. When `total_signed == total_signer`, the contract automatically advances to the final `Approved` state.
+
+### Error codes
+
+Defined in [programs/sol-shield-sdk/src/errors.rs](programs/sol-shield-sdk/src/errors.rs):
+
+- `Overflow` – arithmetic overflow during an update.
+- `InvalidState` – the contract is not in the expected state for the requested instruction.
+- `InvalidPermission` – the caller is not authorized to perform the action.
+
 ## Project layout
 
 ```
-app/
-├── public/           Static assets and HTML shell
-├── src/
-│   ├── components/   Reusable UI components
-│   ├── configs/      Solana cluster and program configuration
-│   ├── hooks/        Custom React hooks
-│   ├── static/       Images, fonts, and other static resources
-│   ├── store/        Redux store, slices, and selectors
-│   ├── view/         Page-level views and routes
-│   ├── watcher/      Side effects and on-chain event watchers
-│   ├── index.tsx     Application entry point
-│   └── utils.ts      Shared utilities
-├── craco.config.js
-├── package.json
-└── tsconfig.json
+solshield/
+├── app/                      React frontend
+│   ├── public/
+│   ├── src/
+│   │   ├── components/       Reusable UI components
+│   │   ├── configs/          Solana cluster and program configuration
+│   │   ├── hooks/            Custom React hooks
+│   │   ├── static/           Images, fonts, and other static resources
+│   │   ├── store/            Redux store, slices, and selectors
+│   │   ├── view/             Page-level views and routes
+│   │   ├── watcher/          Side effects and on-chain event watchers
+│   │   ├── index.tsx         Application entry point
+│   │   └── utils.ts          Shared utilities
+│   ├── craco.config.js
+│   ├── package.json
+│   └── tsconfig.json
+├── programs/
+│   └── sol-shield-sdk/       Anchor program (Rust)
+│       └── src/
+│           ├── lib.rs            Program entry and instruction router
+│           ├── constants.rs      Byte-size constants for account layouts
+│           ├── errors.rs         Custom error codes
+│           ├── instructions/     create_contract, create_signer, active_contract, sign_contract
+│           └── schema/           Contract and ContractSigner account definitions
+├── tests/                    Anchor integration tests (TypeScript)
+├── migrations/               Anchor deployment scripts
+├── Anchor.toml               Anchor workspace configuration
+└── Cargo.toml                Rust workspace configuration
 ```
 
 ## Getting started
@@ -79,41 +142,31 @@ app/
 
 - Node.js 16 or newer
 - Yarn or npm
+- Rust and the Solana CLI
+- [Anchor](https://www.anchor-lang.com/) 0.25.0
 - A Solana wallet browser extension (for example Phantom)
 
-### Install
+### Frontend
 
 ```bash
 cd app
 npm install
-```
-
-### Run the development server
-
-```bash
 npm start
 ```
 
-The app will be available at `http://localhost:3000`.
+The app will be available at `http://localhost:3000`. To produce a production bundle, run `npm run build` from the `app` directory — the output is written to `app/build`.
 
-### Build for production
+### On-chain program
 
-```bash
-npm run build
-```
-
-The production bundle will be emitted to `app/build`.
-
-### Run tests
+From the repository root:
 
 ```bash
-npm test
+anchor build      # compile the sol-shield-sdk program
+anchor test       # run the TypeScript integration tests under tests/
+anchor deploy     # deploy to the cluster configured in Anchor.toml
 ```
 
-## Related
-
-- **On-chain program:** [programs/sol-shield-sdk](../programs/sol-shield-sdk) – the Anchor program that powers contract and signer accounts.
-- **Program tests:** [tests/](../tests/)
+The target cluster and wallet path are configured in [Anchor.toml](Anchor.toml).
 
 ## License
 
